@@ -1,6 +1,8 @@
 # Dependencias para extract_match_urls_simple.py
-requests>=2.31.0
-beautifulsoup4>=4.12.0
+requestselenium
+beautifulsoup4
+lxml
+tqdm>=4.12.0
 
 # Dependencias para extract_match_urls.py (versión con Selenium)
 selenium>=4.15.0

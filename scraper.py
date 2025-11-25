@@ -9,7 +9,9 @@ import time
 import csv
 import re
 import math
+import multiprocessing
 import concurrent.futures
+from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -45,13 +47,26 @@ def extract_urls():
     # Scroll para cargar contenido dinámico
     print("Haciendo scroll...")
     last_height = driver.execute_script("return document.body.scrollHeight")
-    for _ in range(5):
+    no_change_count = 0
+    max_scrolls = 30  # Aumentado de 5 a 30
+    scroll_count = 0
+    
+    while scroll_count < max_scrolls and no_change_count < 3:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
         new_height = driver.execute_script("return document.body.scrollHeight")
+        
         if new_height == last_height:
-            break
+            no_change_count += 1
+            print(f"  Sin cambios ({no_change_count}/3)")
+        else:
+            no_change_count = 0
+            print(f"  Contenido cargado (scroll {scroll_count + 1})")
+        
         last_height = new_height
+        scroll_count += 1
+    
+    print(f"Scroll completado después de {scroll_count} intentos")
 
     # Buscar URLs
     all_links = driver.find_elements(By.TAG_NAME, "a")
@@ -76,18 +91,20 @@ def extract_urls():
 
 def extract_match_data(driver, url, match_number):
     """Extrae datos de un partido"""
-    print(f"[{match_number}] Procesando partido...")
     driver.get(url)
     
     # Esperar a que cargue el contenido dinámico (header del partido)
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CLASS_NAME, "Opta-MatchHeader"))
         )
-        # Pequeña espera adicional para asegurar que las tablas se rendericen
-        time.sleep(1) 
-    except:
-        print(f"⚠️ Timeout esperando carga de {url}")
+        # Esperar también a que haya al menos una tabla de jugadores
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "Opta-Player"))
+        )
+        time.sleep(1)
+    except Exception as e:
+        raise Exception(f"Timeout esperando carga de página: {str(e)}")
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     match_id = re.search(r'/match/view/([a-z0-9]+)', url).group(1)
@@ -117,7 +134,7 @@ def extract_match_data(driver, url, match_number):
 
     equipo_local = team_names[0] if len(team_names) >= 1 else ""
     equipo_visitante = team_names[1] if len(team_names) >= 2 else ""
-
+    
     # Extraer fecha
     fecha = ""
     # Buscar en todo el texto de la página
@@ -136,7 +153,17 @@ def extract_match_data(driver, url, match_number):
         date_match = re.search(pattern, page_text, re.IGNORECASE)
         if date_match:
             fecha = date_match.group()
+            # Normalizar nombres de meses a 3 letras para consistencia
+            fecha = fecha.replace('Sept', 'Sep').replace('September', 'Sep')
+            fecha = fecha.replace('October', 'Oct').replace('November', 'Nov').replace('December', 'Dec')
+            fecha = fecha.replace('January', 'Jan').replace('February', 'Feb').replace('March', 'Mar')  
+            fecha = fecha.replace('April', 'Apr').replace('August', 'Aug')
+            # May, Jun, Jul ya son de 3 letras
             break
+    
+    # Mostrar información del partido (solo si no hay barra de progreso activa)
+    if not hasattr(extract_match_data, 'quiet_mode') or not extract_match_data.quiet_mode:
+        print(f"[{match_number}] {fecha} | {equipo_local} vs {equipo_visitante}")
 
     # Extraer jornada
     jornada = ""
@@ -244,30 +271,56 @@ def extract_match_data(driver, url, match_number):
 
             players_data.append(player_data)
 
-    print(f"  ✓ {len(players_data)} jugadores extraídos")
-    return players_data
+    # Retornar datos y metadatos del partido
+    return {
+        'players': players_data,
+        'fecha': fecha,
+        'equipo_local': equipo_local,
+        'equipo_visitante': equipo_visitante,
+        'match_number': match_number
+    }
 
-def process_batch(batch_data):
+def process_batch(batch_data, progress_counter=None, progress_lock=None):
     """Procesa un lote de URLs con una única instancia del driver"""
     batch_id, urls_with_indices = batch_data
-    print(f"🚀 Iniciando worker {batch_id} con {len(urls_with_indices)} partidos")
     
     driver = setup_driver()
     batch_results = []
+    failed_matches = []
+    
+    # Activar modo silencioso para extract_match_data
+    extract_match_data.quiet_mode = True
     
     try:
         for i, url in urls_with_indices:
             try:
-                match_data = extract_match_data(driver, url, i)
-                batch_results.extend(match_data)
+                result = extract_match_data(driver, url, i)
+                if result and 'players' in result:
+                    batch_results.extend(result['players'])
+                    # Actualizar contador compartido
+                    if progress_counter is not None and progress_lock is not None:
+                        with progress_lock:
+                            progress_counter.value += 1
+                else:
+                    failed_matches.append((i, url, "No se extrajeron datos"))
+                    if progress_counter is not None and progress_lock is not None:
+                        with progress_lock:
+                            progress_counter.value += 1
             except Exception as e:
-                print(f"❌ Error en partido {i}: {str(e)}")
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                failed_matches.append((i, url, error_msg))
+                # Registrar en archivo
+                with open('scraper_errors.log', 'a') as f:
+                    f.write(f"Partido {i}: {url}\n")
+                    f.write(f"Error: {error_msg}\n\n")
+                if progress_counter is not None and progress_lock is not None:
+                    with progress_lock:
+                        progress_counter.value += 1
                 continue
     finally:
         driver.quit()
-        print(f"🏁 Worker {batch_id} finalizado")
         
-    return batch_results
+    return batch_results, failed_matches
 
 def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
     """Extrae datos de todos los partidos en paralelo"""
@@ -316,25 +369,49 @@ def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
             
         batches.append((i + 1, batch_urls))
 
-    print(f"Iniciando {len(batches)} workers para procesar {total_urls} partidos...")
+    print(f"Iniciando {len(batches)} workers para procesar {total_urls} partidos...\n")
     
     all_data = []
+    all_failed = []
     
-    # Ejecutar en paralelo
+    # Crear contador compartido y lock para el progreso
+    manager = multiprocessing.Manager()
+    progress_counter = manager.Value('i', 0)
+    progress_lock = manager.Lock()
+    
+    # Ejecutar en paralelo con barra de progreso
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        future_to_batch = {executor.submit(process_batch, batch): batch for batch in batches}
+        # Enviar trabajos
+        future_to_batch = {executor.submit(process_batch, batch, progress_counter, progress_lock): batch 
+                          for batch in batches}
         
-        for future in concurrent.futures.as_completed(future_to_batch):
-            try:
-                data = future.result()
-                all_data.extend(data)
+        # Monitorear progreso con tqdm
+        with tqdm(total=total_urls, desc="Extrayendo partidos", unit="partido", 
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            
+            # Actualizar barra mientras los trabajos se completan
+            while progress_counter.value < total_urls:
+                current = progress_counter.value
+                pbar.n = current
+                pbar.refresh()
+                time.sleep(0.1)
                 
-                # Guardar progreso parcial (opcional, pero puede ser conflictivo con múltiples procesos escribiendo)
-                # En este caso, solo guardamos cuando un batch termina
-                print(f"� Batch completado. Total registros acumulados: {len(all_data)}")
-                
-            except Exception as exc:
-                print(f'Generó una excepción: {exc}')
+            # Recoger resultados
+            for future in concurrent.futures.as_completed(future_to_batch):
+                try:
+                    data, failed = future.result()
+                    all_data.extend(data)
+                    all_failed.extend(failed)
+                except Exception as exc:
+                    print(f'\n❌ Generó una excepción: {exc}')
+            
+            # Asegurar que la barra llegue a 100%
+            pbar.n = total_urls
+            pbar.refresh()
+    
+    # Mostrar resumen de errores si los hay
+    if all_failed:
+        print(f"\n⚠️ {len(all_failed)} partidos fallidos. Ver scraper_errors.log para detalles.")
 
     # Guardar datos finales
     print("\n" + "="*80)
@@ -343,6 +420,87 @@ def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
     print(f"✓ {len(all_data)} registros guardados")
     print(f"✓ Archivo: BBDD_partidos_completo.csv")
     print("="*80 + "\n")
+    
+    # Generar resumen de partidos por fecha
+    print("\n" + "="*80)
+    print("RESUMEN DE PARTIDOS PROCESADOS")
+    print("="*80 + "\n")
+    
+    # Agrupar partidos por fecha
+    from collections import defaultdict
+    from datetime import datetime
+    
+    partidos_por_fecha = defaultdict(list)
+    
+    for record in all_data:
+        fecha = record.get('Fecha', 'Sin fecha')
+        aux = record.get('Aux', 0)
+        local = record.get('Equipo_local', '')
+        visitante = record.get('Equipo_Visitante', '')
+        
+        # Crear clave única para cada partido
+        partido_key = (aux, fecha, local, visitante)
+        
+        if partido_key not in [p[0] for p in partidos_por_fecha[fecha]]:
+            partidos_por_fecha[fecha].append((partido_key, 0))
+    
+    # Contar jugadores por partido
+    for record in all_data:
+        fecha = record.get('Fecha', 'Sin fecha')
+        aux = record.get('Aux', 0)
+        local = record.get('Equipo_local', '')
+        visitante = record.get('Equipo_Visitante', '')
+        partido_key = (aux, fecha, local, visitante)
+        
+        for i, (pk, count) in enumerate(partidos_por_fecha[fecha]):
+            if pk == partido_key:
+                partidos_por_fecha[fecha][i] = (pk, count + 1)
+                break
+    
+    # Ordenar fechas (más reciente primero)
+    def parse_date(date_str):
+        # Intentar varios formatos de fecha
+        formats = [
+            '%d %b %Y',      # 15 Aug 2025
+            '%d %B %Y',      # 15 August 2025
+        ]
+        
+        for fmt in formats:
+            try:
+                return datetime.strptime(date_str, fmt)
+            except:
+                continue
+        
+        # Si ninguno funciona, intentar con replace para normalizar
+        try:
+            # Normalizar "Sept" a "Sep"
+            normalized = date_str.replace('Sept', 'Sep')
+            return datetime.strptime(normalized, '%d %b %Y')
+        except:
+            # Último intento: imprimir para debug y retornar min
+            print(f"⚠️ No se pudo parsear fecha: '{date_str}'")
+            return datetime.min
+    
+    fechas_ordenadas = sorted(partidos_por_fecha.keys(), key=parse_date, reverse=True)
+    
+    # Mostrar resumen
+    for fecha in fechas_ordenadas:
+        print(f"\n📅 {fecha}")
+        print("-" * 60)
+        
+        # Ordenar partidos por número (Aux)
+        partidos = sorted(partidos_por_fecha[fecha], key=lambda x: x[0][0])
+        
+        for partido_key, num_jugadores in partidos:
+            aux, _, local, visitante = partido_key
+            # Acortar nombres de equipos si son muy largos
+            if len(local) > 20:
+                local = local[:17] + "..."
+            if len(visitante) > 20:
+                visitante = visitante[:17] + "..."
+            print(f"  {local:25} vs  {visitante:25} ({num_jugadores} jugadores)")
+    
+    print("\n" + "="*80)
 
 def save_csv(data, filename):
     """Guarda datos en CSV"""
