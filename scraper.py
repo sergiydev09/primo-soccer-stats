@@ -8,6 +8,8 @@ import sys
 import time
 import csv
 import re
+import math
+import concurrent.futures
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
@@ -160,10 +162,32 @@ def extract_match_data(driver, url, match_number):
     print(f"  ✓ {len(players_data)} jugadores extraídos")
     return players_data
 
-def extract_all_data():
-    """Extrae datos de todos los partidos"""
+def process_batch(batch_data):
+    """Procesa un lote de URLs con una única instancia del driver"""
+    batch_id, urls_with_indices = batch_data
+    print(f"🚀 Iniciando worker {batch_id} con {len(urls_with_indices)} partidos")
+    
+    driver = setup_driver()
+    batch_results = []
+    
+    try:
+        for i, url in urls_with_indices:
+            try:
+                match_data = extract_match_data(driver, url, i)
+                batch_results.extend(match_data)
+            except Exception as e:
+                print(f"❌ Error en partido {i}: {str(e)}")
+                continue
+    finally:
+        driver.quit()
+        print(f"🏁 Worker {batch_id} finalizado")
+        
+    return batch_results
+
+def extract_all_data(limit=None, workers=None):
+    """Extrae datos de todos los partidos en paralelo"""
     print("="*80)
-    print("EXTRAYENDO DATOS DE TODOS LOS PARTIDOS")
+    print("EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO)")
     print("="*80)
 
     # Leer URLs
@@ -175,33 +199,65 @@ def extract_all_data():
         print("   Ejecuta primero: python3 scraper.py urls")
         return
 
-    print(f"\nTotal de partidos: {len(urls)}\n")
+    if limit:
+        urls = urls[:limit]
 
-    driver = setup_driver()
+    total_urls = len(urls)
+    print(f"\nTotal de partidos: {total_urls}\n")
+
+    # Configuración de paralelismo
+    if workers:
+        max_workers = workers
+    else:
+        # Usamos 4 workers por defecto, o menos si hay pocos partidos
+        max_workers = min(4, total_urls)
+    
+    if max_workers < 1: max_workers = 1
+    
+    # Dividir URLs en lotes
+    batch_size = math.ceil(total_urls / max_workers)
+    batches = []
+    
+    for i in range(max_workers):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, total_urls)
+        if start_idx >= total_urls:
+            break
+            
+        # Crear lista de tuplas (indice_original, url)
+        batch_urls = []
+        for j in range(start_idx, end_idx):
+            batch_urls.append((j + 1, urls[j]))
+            
+        batches.append((i + 1, batch_urls))
+
+    print(f"Iniciando {len(batches)} workers para procesar {total_urls} partidos...")
+    
     all_data = []
+    
+    # Ejecutar en paralelo
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_batch = {executor.submit(process_batch, batch): batch for batch in batches}
+        
+        for future in concurrent.futures.as_completed(future_to_batch):
+            try:
+                data = future.result()
+                all_data.extend(data)
+                
+                # Guardar progreso parcial (opcional, pero puede ser conflictivo con múltiples procesos escribiendo)
+                # En este caso, solo guardamos cuando un batch termina
+                print(f"� Batch completado. Total registros acumulados: {len(all_data)}")
+                
+            except Exception as exc:
+                print(f'Generó una excepción: {exc}')
 
-    try:
-        for i, url in enumerate(urls, 1):
-            match_data = extract_match_data(driver, url, i)
-            all_data.extend(match_data)
-
-            # Guardar progreso cada 10 partidos
-            if i % 10 == 0:
-                print(f"\n💾 Guardando progreso ({i}/{len(urls)})...\n")
-                save_csv(all_data, 'match_data_progress.csv')
-
-            time.sleep(2)
-
-        # Guardar datos finales
-        print("\n" + "="*80)
-        print("💾 Guardando datos finales...")
-        save_csv(all_data, 'BBDD_partidos_completo.csv')
-        print(f"✓ {len(all_data)} registros guardados")
-        print(f"✓ Archivo: BBDD_partidos_completo.csv")
-        print("="*80 + "\n")
-
-    finally:
-        driver.quit()
+    # Guardar datos finales
+    print("\n" + "="*80)
+    print("💾 Guardando datos finales...")
+    save_csv(all_data, 'BBDD_partidos_completo.csv')
+    print(f"✓ {len(all_data)} registros guardados")
+    print(f"✓ Archivo: BBDD_partidos_completo.csv")
+    print("="*80 + "\n")
 
 def save_csv(data, filename):
     """Guarda datos en CSV"""
@@ -224,26 +280,27 @@ def save_csv(data, filename):
         writer.writerows(data)
 
 def main():
-    if len(sys.argv) < 2:
-        print("Uso: python3 scraper.py [urls|data|all]")
-        print("  urls - Extraer URLs de partidos")
-        print("  data - Extraer datos de partidos (requiere match_urls.txt)")
-        print("  all  - Ejecutar todo (urls + data)")
-        sys.exit(1)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Extractor de Datos de Partidos')
+    parser.add_argument('command', choices=['urls', 'data', 'all'], help='Comando a ejecutar')
+    parser.add_argument('--limit', type=int, help='Limitar número de partidos (para pruebas)')
+    parser.add_argument('--workers', type=int, help='Número de workers en paralelo')
+    
+    args = parser.parse_args()
 
-    command = sys.argv[1].lower()
+    start_time = time.time()
 
-    if command == 'urls':
+    if args.command == 'urls':
         extract_urls()
-    elif command == 'data':
-        extract_all_data()
-    elif command == 'all':
+    elif args.command == 'data':
+        extract_all_data(limit=args.limit, workers=args.workers)
+    elif args.command == 'all':
         extract_urls()
-        extract_all_data()
-    else:
-        print(f"❌ Comando desconocido: {command}")
-        print("   Usa: urls, data, o all")
-        sys.exit(1)
+        extract_all_data(limit=args.limit, workers=args.workers)
+        
+    duration = time.time() - start_time
+    print(f"\n⏱️ Tiempo total de ejecución: {duration:.2f} segundos")
 
 if __name__ == "__main__":
     main()
