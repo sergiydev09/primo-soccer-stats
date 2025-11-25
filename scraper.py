@@ -96,19 +96,48 @@ def extract_match_data(driver, url, match_number):
     equipo_local = team_names[0] if len(team_names) >= 1 else ""
     equipo_visitante = team_names[1] if len(team_names) >= 2 else ""
 
+    # Extraer fecha
+    fecha = ""
+    # Buscar en todo el texto de la página
+    page_text = soup.get_text(" ", strip=True)
+    
+    # Patrones de fecha:
+    # 1. DD Month YYYY (e.g. 15 August 2024)
+    # 2. Month DD, YYYY (e.g. August 15, 2024)
+    # 3. DD/MM/YYYY
+    date_patterns = [
+        r'\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}',
+        r'(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}'
+    ]
+    
+    for pattern in date_patterns:
+        date_match = re.search(pattern, page_text, re.IGNORECASE)
+        if date_match:
+            fecha = date_match.group()
+            break
+
     # Extraer jornada
     jornada = ""
-    jornada_text = soup.find(string=re.compile(r'Matchweek|Jornada|Round'))
-    if jornada_text:
-        match_jornada = re.search(r'\d+', jornada_text)
-        if match_jornada:
-            jornada = match_jornada.group()
+    # Buscar "Matchweek X" o "Round X"
+    jornada_match = re.search(r'(?:Matchweek|Jornada|Round)\s+(\d+)', page_text, re.IGNORECASE)
+    if jornada_match:
+        jornada = jornada_match.group(1)
 
     # Extraer datos de jugadores
     players_data = []
     tables = soup.find_all('table')
 
-    for table_idx, table in enumerate(tables):
+    # Filtrar solo tablas de jugadores
+    player_tables = []
+    for table in tables:
+        if table.find('th', class_='Opta-Player'):
+            player_tables.append(table)
+            
+    # Limitar a las 2 primeras (Local y Visitante)
+    if len(player_tables) > 2:
+        player_tables = player_tables[:2]
+        
+    for table_idx, table in enumerate(player_tables):
         thead = table.find('thead')
         if not thead:
             continue
@@ -124,7 +153,7 @@ def extract_match_data(driver, url, match_number):
         if not headers or all(h == '' for h in headers):
             continue
 
-        equipo_jugador = equipo_local if table_idx <= 1 else equipo_visitante
+        equipo_jugador = equipo_local if table_idx == 0 else equipo_visitante
 
         # Filas de jugadores
         tbody = table.find('tbody')
@@ -144,12 +173,12 @@ def extract_match_data(driver, url, match_number):
 
             player_data = {
                 'Aux': match_number,
+                'Fecha': fecha,
                 'Jornada': jornada,
                 'ID_PARTIDO': match_id,
                 'Arbitro': arbitro,
                 'Equipo_local': equipo_local,
                 'Equipo_Visitante': equipo_visitante,
-                'Equipo_Jugador': equipo_jugador,
                 'Jugador': jugador
             }
 
@@ -268,8 +297,8 @@ def save_csv(data, filename):
     for record in data:
         all_keys.update(record.keys())
 
-    priority_fields = ['Aux', 'Jornada', 'ID_PARTIDO', 'Arbitro', 'Equipo_local',
-                      'Equipo_Visitante', 'Equipo_Jugador', 'Jugador']
+    priority_fields = ['Aux', 'Fecha', 'Jornada', 'ID_PARTIDO', 'Arbitro', 'Equipo_local',
+                      'Equipo_Visitante', 'Jugador']
 
     fieldnames = [f for f in priority_fields if f in all_keys]
     fieldnames.extend(sorted([k for k in all_keys if k not in priority_fields]))
