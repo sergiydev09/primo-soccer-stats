@@ -12,6 +12,8 @@ import math
 import concurrent.futures
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 
@@ -23,6 +25,8 @@ def setup_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    # Deshabilitar imágenes para cargar más rápido
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     return webdriver.Chrome(options=chrome_options)
 
 def extract_urls():
@@ -74,7 +78,16 @@ def extract_match_data(driver, url, match_number):
     """Extrae datos de un partido"""
     print(f"[{match_number}] Procesando partido...")
     driver.get(url)
-    time.sleep(5)
+    
+    # Esperar a que cargue el contenido dinámico (header del partido)
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "Opta-MatchHeader"))
+        )
+        # Pequeña espera adicional para asegurar que las tablas se rendericen
+        time.sleep(1) 
+    except:
+        print(f"⚠️ Timeout esperando carga de {url}")
 
     soup = BeautifulSoup(driver.page_source, 'html.parser')
     match_id = re.search(r'/match/view/([a-z0-9]+)', url).group(1)
@@ -281,8 +294,8 @@ def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
     if workers:
         max_workers = workers
     else:
-        # Usamos 4 workers por defecto, o menos si hay pocos partidos
-        max_workers = min(4, total_urls)
+        # Usamos hasta 8 workers si es posible
+        max_workers = min(8, total_urls)
     
     if max_workers < 1: max_workers = 1
     
