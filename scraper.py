@@ -87,11 +87,20 @@ def extract_match_data(driver, url, match_number):
 
     # Extraer equipos
     team_names = []
-    for img in soup.find_all('img', alt=True):
-        alt = img.get('alt', '')
-        if alt and 'Opta' not in alt and len(alt) > 2 and alt not in team_names:
-            if any(word in alt.lower() for word in ['cf', 'fc', 'club', 'madrid', 'barcelona', 'athletic']):
-                team_names.append(alt)
+    # Intentar primero con texto (más fiable)
+    name_elements = soup.find_all(class_='Opta-Team-Name')
+    for el in name_elements:
+        text = el.get_text(strip=True)
+        if text and text not in team_names:
+            team_names.append(text)
+            
+    # Si no encuentra texto, intentar con imágenes
+    if len(team_names) < 2:
+        for img in soup.find_all('img', alt=True):
+            alt = img.get('alt', '')
+            if alt and 'Opta' not in alt and len(alt) > 2 and alt not in team_names:
+                if any(word in alt.lower() for word in ['cf', 'fc', 'club', 'madrid', 'barcelona', 'athletic', 'real', 'sporting', 'deportivo', 'sociedad', 'betis', 'sevilla', 'valencia', 'villarreal', 'osasuna', 'alavés', 'mallorca', 'girona', 'celta', 'rayo', 'palmas', 'almería', 'granada', 'cadiz', 'valladolid', 'leganés', 'espanyol', 'levante', 'eibar', 'oviedo', 'racing', 'zaragoza', 'burgos', 'ferrol', 'elche', 'tenerife', 'albacete', 'cartagena', 'mirandés', 'huesca', 'eldense', 'amorebieta', 'alcorcón', 'andorra']):
+                    team_names.append(alt)
 
     equipo_local = team_names[0] if len(team_names) >= 1 else ""
     equipo_visitante = team_names[1] if len(team_names) >= 2 else ""
@@ -128,16 +137,50 @@ def extract_match_data(driver, url, match_number):
     tables = soup.find_all('table')
 
     # Filtrar solo tablas de jugadores
-    player_tables = []
+    candidate_tables = []
     for table in tables:
         if table.find('th', class_='Opta-Player'):
-            player_tables.append(table)
+            candidate_tables.append(table)
             
-    # Limitar a las 2 primeras (Local y Visitante)
-    if len(player_tables) > 2:
-        player_tables = player_tables[:2]
+    # Seleccionar las tablas correctas (Home y Away)
+    # A veces hay tablas duplicadas (resumen vs detalle) para el mismo equipo
+    final_tables = []
+    
+    if candidate_tables:
+        # La primera tabla siempre es el equipo local
+        final_tables.append(candidate_tables[0])
         
-    for table_idx, table in enumerate(player_tables):
+        # Para la segunda tabla (visitante), buscamos una que tenga jugadores diferentes
+        # Extraemos el primer jugador de la primera tabla para comparar
+        first_table_players = set()
+        tbody = candidate_tables[0].find('tbody')
+        if tbody:
+            for row in tbody.find_all('tr'):
+                th = row.find('th', class_='Opta-Player')
+                if th:
+                    first_table_players.add(th.text.strip())
+        
+        for i in range(1, len(candidate_tables)):
+            current_table = candidate_tables[i]
+            # Verificar primer jugador de esta tabla
+            tbody = current_table.find('tbody')
+            if not tbody: continue
+            
+            is_duplicate = False
+            for row in tbody.find_all('tr'):
+                th = row.find('th', class_='Opta-Player')
+                if th:
+                    player_name = th.text.strip()
+                    if player_name in first_table_players:
+                        is_duplicate = True
+                    break # Solo comprobamos el primer jugador
+            
+            if not is_duplicate:
+                final_tables.append(current_table)
+                break # Ya tenemos la tabla del visitante
+                
+    # Procesar las tablas seleccionadas
+    for table_idx, table in enumerate(final_tables):
         thead = table.find('thead')
         if not thead:
             continue
@@ -213,7 +256,7 @@ def process_batch(batch_data):
         
     return batch_results
 
-def extract_all_data(limit=None, workers=None):
+def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
     """Extrae datos de todos los partidos en paralelo"""
     print("="*80)
     print("EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO)")
@@ -221,10 +264,10 @@ def extract_all_data(limit=None, workers=None):
 
     # Leer URLs
     try:
-        with open('match_urls.txt', 'r') as f:
+        with open(input_file, 'r') as f:
             urls = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print("❌ Archivo match_urls.txt no encontrado")
+        print(f"❌ Archivo {input_file} no encontrado")
         print("   Ejecuta primero: python3 scraper.py urls")
         return
 
@@ -315,6 +358,7 @@ def main():
     parser.add_argument('command', choices=['urls', 'data', 'all'], help='Comando a ejecutar')
     parser.add_argument('--limit', type=int, help='Limitar número de partidos (para pruebas)')
     parser.add_argument('--workers', type=int, help='Número de workers en paralelo')
+    parser.add_argument('--input', type=str, default='match_urls.txt', help='Archivo de entrada de URLs')
     
     args = parser.parse_args()
 
@@ -323,10 +367,10 @@ def main():
     if args.command == 'urls':
         extract_urls()
     elif args.command == 'data':
-        extract_all_data(limit=args.limit, workers=args.workers)
+        extract_all_data(limit=args.limit, workers=args.workers, input_file=args.input)
     elif args.command == 'all':
         extract_urls()
-        extract_all_data(limit=args.limit, workers=args.workers)
+        extract_all_data(limit=args.limit, workers=args.workers, input_file=args.input)
         
     duration = time.time() - start_time
     print(f"\n⏱️ Tiempo total de ejecución: {duration:.2f} segundos")
