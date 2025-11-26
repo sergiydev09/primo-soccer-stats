@@ -9,6 +9,7 @@ import time
 import csv
 import re
 import math
+import argparse
 import multiprocessing
 import concurrent.futures
 from tqdm import tqdm
@@ -18,6 +19,40 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
+
+# Configuración de ligas
+LEAGUES = {
+    'spain': {
+        'name': 'Primera División',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/primera-divisi%C3%B3n-2025-2026/80zg2v1cuqcfhphn56u4qpyqc/opta-player-stats',
+        'csv_file': 'BBDD_partidos_spain.csv',
+        'urls_file': 'match_urls_spain.txt'
+    },
+    'england': {
+        'name': 'Premier League',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/premier-league-2025-2026/51r6ph2woavlbbpk8f29nynf8/opta-player-stats',
+        'csv_file': 'BBDD_partidos_england.csv',
+        'urls_file': 'match_urls_england.txt'
+    },
+    'germany': {
+        'name': 'Bundesliga',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/bundesliga-2025-2026/2bchmrj23l9u42d68ntcekob8/opta-player-stats',
+        'csv_file': 'BBDD_partidos_germany.csv',
+        'urls_file': 'match_urls_germany.txt'
+    },
+    'italy': {
+        'name': 'Serie A',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/serie-a-2025-2026/emdmtfr1v8rey2qru3xzfwges/opta-player-stats',
+        'csv_file': 'BBDD_partidos_italy.csv',
+        'urls_file': 'match_urls_italy.txt'
+    },
+    'france': {
+        'name': 'Ligue 1',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/ligue-1-2025-2026/dbxs75cag7zyip5re0ppsanmc/opta-player-stats',
+        'csv_file': 'BBDD_partidos_france.csv',
+        'urls_file': 'match_urls_france.txt'
+    }
+}
 
 def setup_driver():
     """Configura el driver de Chrome"""
@@ -31,13 +66,13 @@ def setup_driver():
     chrome_options.add_argument("--blink-settings=imagesEnabled=false")
     return webdriver.Chrome(options=chrome_options)
 
-def extract_urls():
+def extract_urls(league_config):
     """Extrae URLs de todos los partidos"""
     print("="*80)
-    print("EXTRAYENDO URLs DE PARTIDOS")
+    print(f"EXTRAYENDO URLs DE PARTIDOS - {league_config['name']}")
     print("="*80)
 
-    url = "https://optaplayerstats.statsperform.com/en_GB/soccer/primera-divisi%C3%B3n-2025-2026/80zg2v1cuqcfhphn56u4qpyqc/opta-player-stats"
+    url = league_config['url']
 
     driver = setup_driver()
     print(f"\nCargando: {url}")
@@ -82,11 +117,11 @@ def extract_urls():
     driver.quit()
 
     # Guardar URLs
-    with open('match_urls.txt', 'w') as f:
+    with open(league_config['urls_file'], 'w') as f:
         for url in match_urls:
             f.write(url + '\n')
 
-    print(f"\n✓ {len(match_urls)} URLs guardadas en: match_urls.txt\n")
+    print(f"\n✓ {len(match_urls)} URLs guardadas en: {league_config['urls_file']}\n")
     return match_urls
 
 def extract_match_data(driver, url, match_number):
@@ -322,19 +357,19 @@ def process_batch(batch_data, progress_counter=None, progress_lock=None):
         
     return batch_results, failed_matches
 
-def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
+def extract_all_data(league_config, limit=None, workers=None):
     """Extrae datos de todos los partidos en paralelo"""
     print("="*80)
-    print("EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO)")
+    print(f"EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO) - {league_config['name']}")
     print("="*80)
 
     # Leer URLs
     try:
-        with open(input_file, 'r') as f:
+        with open(league_config['urls_file'], 'r') as f:
             urls = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f"❌ Archivo {input_file} no encontrado")
-        print("   Ejecuta primero: python3 scraper.py urls")
+        print(f"❌ Archivo {league_config['urls_file']} no encontrado")
+        print("   Ejecuta primero: python3 scraper.py urls --league <league>")
         return
 
     if limit:
@@ -416,9 +451,9 @@ def extract_all_data(limit=None, workers=None, input_file='match_urls.txt'):
     # Guardar datos finales
     print("\n" + "="*80)
     print("💾 Guardando datos finales...")
-    save_csv(all_data, 'BBDD_partidos_completo.csv')
+    save_csv(all_data, league_config['csv_file'])
     print(f"✓ {len(all_data)} registros guardados")
-    print(f"✓ Archivo: BBDD_partidos_completo.csv")
+    print(f"✓ Archivo: {league_config['csv_file']}")
     print("="*80 + "\n")
     
     # Generar resumen de partidos por fecha
@@ -523,28 +558,45 @@ def save_csv(data, filename):
         writer.writerows(data)
 
 def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Extractor de Datos de Partidos')
+    parser = argparse.ArgumentParser(description='Scraper de datos de partidos')
     parser.add_argument('command', choices=['urls', 'data', 'all'], help='Comando a ejecutar')
+    parser.add_argument('--league', type=str, default='spain', 
+                       choices=['spain', 'england', 'germany', 'italy', 'france', 'both', 'all'],
+                       help='Liga a procesar: spain, england, germany, italy, france, both (spain+england), o all (todas)')
     parser.add_argument('--limit', type=int, help='Limitar número de partidos (para pruebas)')
     parser.add_argument('--workers', type=int, help='Número de workers en paralelo')
-    parser.add_argument('--input', type=str, default='match_urls.txt', help='Archivo de entrada de URLs')
     
     args = parser.parse_args()
 
     start_time = time.time()
-
-    if args.command == 'urls':
-        extract_urls()
-    elif args.command == 'data':
-        extract_all_data(limit=args.limit, workers=args.workers, input_file=args.input)
-    elif args.command == 'all':
-        extract_urls()
-        extract_all_data(limit=args.limit, workers=args.workers, input_file=args.input)
+    
+    # Determinar qué ligas procesar
+    if args.league == 'both':
+        leagues_to_process = ['spain', 'england']
+    elif args.league == 'all':
+        leagues_to_process = ['spain', 'england', 'germany', 'italy', 'france']
+    else:
+        leagues_to_process = [args.league]
+    
+    # Procesar cada liga
+    for league_key in leagues_to_process:
+        league_config = LEAGUES[league_key]
+        
+        print("\n" + "#"*80)
+        print(f"# PROCESANDO: {league_config['name'].upper()}")
+        print("#"*80 + "\n")
+        
+        if args.command == 'urls':
+            extract_urls(league_config)
+        elif args.command == 'data':
+            extract_all_data(league_config, limit=args.limit, workers=args.workers)
+        elif args.command == 'all':
+            extract_urls(league_config)
+            extract_all_data(league_config, limit=args.limit, workers=args.workers)
         
     duration = time.time() - start_time
     print(f"\n⏱️ Tiempo total de ejecución: {duration:.2f} segundos")
+
 
 if __name__ == "__main__":
     main()

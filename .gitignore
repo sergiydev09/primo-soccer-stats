@@ -2,6 +2,7 @@
 *.csv
 *.html
 match_urls.txt
+match_urls_*.txt
 
 # Python
 __pycache__/
