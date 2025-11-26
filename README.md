@@ -1,14 +1,20 @@
 # Soccer Stats Scraper
 
-Scraper paralelo optimizado para extraer estadísticas de jugadores de las principales ligas europeas de fútbol.
+Scraper paralelo optimizado para extraer estadísticas de jugadores de las principales ligas y competiciones europeas de fútbol.
 
-## Ligas Soportadas
+## Competiciones Soportadas
 
+### Ligas Nacionales
 - ✅ **España**: Primera División (La Liga)
+- ✅ **España**: Segunda División
 - ✅ **Inglaterra**: Premier League
 - ✅ **Alemania**: Bundesliga
 - ✅ **Italia**: Serie A
 - ✅ **Francia**: Ligue 1
+
+### Competiciones Europeas
+- ✅ **UEFA Champions League** (UCL)
+- ✅ **UEFA Europa League** (UEL)
 
 ## Instalación
 
@@ -18,32 +24,29 @@ pip3 install -r requirements.txt
 
 ## Uso
 
-### Una liga específica
+### Una competición específica
 
 ```bash
-# España
-python3 scraper.py all --league spain
+# Ligas nacionales
+python3 scraper.py all --league spain      # La Liga
+python3 scraper.py all --league spain2     # Segunda División
+python3 scraper.py all --league england    # Premier League
+python3 scraper.py all --league germany    # Bundesliga
+python3 scraper.py all --league italy      # Serie A
+python3 scraper.py all --league france     # Ligue 1
 
-# Inglaterra
-python3 scraper.py all --league england
-
-# Alemania
-python3 scraper.py all --league germany
-
-# Italia
-python3 scraper.py all --league italy
-
-# Francia
-python3 scraper.py all --league france
+# Competiciones europeas
+python3 scraper.py all --league ucl        # Champions League
+python3 scraper.py all --league uel        # Europa League
 ```
 
-### Múltiples ligas
+### Múltiples competiciones
 
 ```bash
 # España + Inglaterra
 python3 scraper.py all --league both
 
-# Todas las ligas
+# Todas las competiciones (8 en total)
 python3 scraper.py all --league all
 ```
 
@@ -65,15 +68,18 @@ python3 scraper.py data --league spain
 
 ## Archivos Generados
 
-Cada liga genera dos archivos:
+Cada competición genera dos archivos:
 
-| Liga | URLs | CSV |
-|------|------|-----|
-| España | `match_urls_spain.txt` | `BBDD_partidos_spain.csv` |
-| Inglaterra | `match_urls_england.txt` | `BBDD_partidos_england.csv` |
-| Alemania | `match_urls_germany.txt` | `BBDD_partidos_germany.csv` |
-| Italia | `match_urls_italy.txt` | `BBDD_partidos_italy.csv` |
-| Francia | `match_urls_france.txt` | `BBDD_partidos_france.csv` |
+| Competición | URLs | CSV |
+|-------------|------|-----|
+| La Liga | `match_urls_spain.txt` | `BBDD_partidos_spain.csv` |
+| Segunda División | `match_urls_spain2.txt` | `BBDD_partidos_spain2.csv` |
+| Premier League | `match_urls_england.txt` | `BBDD_partidos_england.csv` |
+| Bundesliga | `match_urls_germany.txt` | `BBDD_partidos_germany.csv` |
+| Serie A | `match_urls_italy.txt` | `BBDD_partidos_italy.csv` |
+| Ligue 1 | `match_urls_france.txt` | `BBDD_partidos_france.csv` |
+| Champions League | `match_urls_ucl.txt` | `BBDD_partidos_ucl.csv` |
+| Europa League | `match_urls_uel.txt` | `BBDD_partidos_uel.csv` |
 
 ## Estructura del CSV
 
@@ -84,11 +90,16 @@ Cada CSV contiene:
 
 ## Características
 
+- ✅ 8 competiciones soportadas
 - ✅ Procesamiento paralelo (8 workers por defecto)
 - ✅ Barra de progreso en tiempo real
 - ✅ Resumen ordenado por fecha
 - ✅ Manejo de errores con logging
 - ✅ ~65-77 segundos por 130 partidos
+
+## Nota sobre Competiciones Europeas
+
+Las competiciones europeas (UCL, UEL) pueden tener tiempos de carga más lentos debido a JavaScript más pesado en las páginas. Se recomienda usarlas con paciencia o aumentar los timeouts si es necesario.
 
 ## Requisitos
 

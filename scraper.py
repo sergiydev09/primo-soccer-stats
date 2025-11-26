@@ -51,6 +51,24 @@ LEAGUES = {
         'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/ligue-1-2025-2026/dbxs75cag7zyip5re0ppsanmc/opta-player-stats',
         'csv_file': 'BBDD_partidos_france.csv',
         'urls_file': 'match_urls_france.txt'
+    },
+    'ucl': {
+        'name': 'UEFA Champions League',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/uefa-champions-league-2025-2026/2mr0u0l78k2gdsm79q56tb2fo/opta-player-stats',
+        'csv_file': 'BBDD_partidos_ucl.csv',
+        'urls_file': 'match_urls_ucl.txt'
+    },
+    'uel': {
+        'name': 'UEFA Europa League',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/uefa-europa-league-2025-2026/7ttpe5jzya3vjhjadiemjy7mc/opta-player-stats',
+        'csv_file': 'BBDD_partidos_uel.csv',
+        'urls_file': 'match_urls_uel.txt'
+    },
+    'spain2': {
+        'name': 'Segunda División',
+        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/segunda-divisi%C3%B3n-2025-2026/dko0hzifl1xv9c51s3ai017v8/opta-player-stats',
+        'csv_file': 'BBDD_partidos_spain2.csv',
+        'urls_file': 'match_urls_spain2.txt'
     }
 }
 
@@ -561,8 +579,8 @@ def main():
     parser = argparse.ArgumentParser(description='Scraper de datos de partidos')
     parser.add_argument('command', choices=['urls', 'data', 'all'], help='Comando a ejecutar')
     parser.add_argument('--league', type=str, default='spain', 
-                       choices=['spain', 'england', 'germany', 'italy', 'france', 'both', 'all'],
-                       help='Liga a procesar: spain, england, germany, italy, france, both (spain+england), o all (todas)')
+                       choices=['spain', 'england', 'germany', 'italy', 'france', 'ucl', 'uel', 'spain2', 'both', 'all'],
+                       help='Liga/Competición: spain, england, germany, italy, france, ucl, uel, spain2, both (spain+england), o all (todas)')
     parser.add_argument('--limit', type=int, help='Limitar número de partidos (para pruebas)')
     parser.add_argument('--workers', type=int, help='Número de workers en paralelo')
     
@@ -574,7 +592,7 @@ def main():
     if args.league == 'both':
         leagues_to_process = ['spain', 'england']
     elif args.league == 'all':
-        leagues_to_process = ['spain', 'england', 'germany', 'italy', 'france']
+        leagues_to_process = ['spain', 'england', 'germany', 'italy', 'france', 'ucl', 'uel', 'spain2']
     else:
         leagues_to_process = [args.league]
     
