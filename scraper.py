@@ -148,11 +148,11 @@ def extract_match_data(driver, url, match_number):
     
     # Esperar a que cargue el contenido dinámico (header del partido)
     try:
-        WebDriverWait(driver, 15).until(
+        WebDriverWait(driver, 30).until(
             EC.presence_of_element_located((By.CLASS_NAME, "Opta-MatchHeader"))
         )
         # Esperar también a que haya al menos una tabla de jugadores
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 20).until(
             EC.presence_of_element_located((By.CLASS_NAME, "Opta-Player"))
         )
         time.sleep(1)
@@ -168,25 +168,97 @@ def extract_match_data(driver, url, match_number):
     if referee_element and referee_element.find_next_sibling('dd'):
         arbitro = referee_element.find_next_sibling('dd').text.strip()
 
-    # Extraer equipos
+
+    # Extraer equipos con estrategia múltiple
     team_names = []
-    # Intentar primero con texto (más fiable)
+    
+    # Estrategia 1: Buscar elementos con clase Opta-Team-Name
     name_elements = soup.find_all(class_='Opta-Team-Name')
     for el in name_elements:
         text = el.get_text(strip=True)
-        if text and text not in team_names:
+        if text and text not in team_names and len(text) > 2:
             team_names.append(text)
-            
-    # Si no encuentra texto, intentar con imágenes
+    
+    # Estrategia 2: Si no se encontraron, buscar en enlaces <a> del filtro de equipos
+    if len(team_names) < 2:
+        # Buscar enlaces que contengan "filter" en su href o clase
+        filter_links = soup.find_all('a', href=True)
+        for link in filter_links:
+            href = link.get('href', '')
+            text = link.get_text(strip=True)
+            # Links de filtro suelen tener el team ID en el href
+            if '/team/' in href or 'filter' in link.get('class', []):
+                if text and text not in team_names and len(text) > 2:
+                    # Evitar textos genéricos como "All", "Home", "Away"
+                    if text.lower() not in ['all', 'home', 'away', 'filter']:
+                        team_names.append(text)
+    
+    # Estrategia 3: Buscar en el header del partido
+    if len(team_names) < 2:
+        header = soup.find(class_='Opta-MatchHeader')
+        if header:
+            # Buscar todos los textos en el header que parezcan nombres de equipos
+            header_text = header.get_text(" ", strip=True)
+            # Separar por el marcador (números separados por guiones o espacios)
+            # Buscar patrón: "Equipo1 X - Y Equipo2" o "Equipo1 X Y Equipo2"
+            score_pattern = r'(\d+)\s*[-:]\s*(\d+)'
+            parts = re.split(score_pattern, header_text)
+            if len(parts) >= 4:
+                team1 = parts[0].strip()
+                team2 = parts[3].strip() if len(parts) > 3 else ""
+                if team1 and team1 not in team_names and len(team1) > 2:
+                    team_names.append(team1)
+                if team2 and team2 not in team_names and len(team2) > 2:
+                    team_names.append(team2)
+    
+    # Estrategia 4: Buscar en imágenes (última opción)
     if len(team_names) < 2:
         for img in soup.find_all('img', alt=True):
             alt = img.get('alt', '')
             if alt and 'Opta' not in alt and len(alt) > 2 and alt not in team_names:
-                if any(word in alt.lower() for word in ['cf', 'fc', 'club', 'madrid', 'barcelona', 'athletic', 'real', 'sporting', 'deportivo', 'sociedad', 'betis', 'sevilla', 'valencia', 'villarreal', 'osasuna', 'alavés', 'mallorca', 'girona', 'celta', 'rayo', 'palmas', 'almería', 'granada', 'cadiz', 'valladolid', 'leganés', 'espanyol', 'levante', 'eibar', 'oviedo', 'racing', 'zaragoza', 'burgos', 'ferrol', 'elche', 'tenerife', 'albacete', 'cartagena', 'mirandés', 'huesca', 'eldense', 'amorebieta', 'alcorcón', 'andorra']):
+                # Lista de palabras clave que suelen estar en nombres de equipos
+                team_keywords = ['cf', 'fc', 'club', 'united', 'city', 'athletic', 'real', 'sporting', 
+                                'deportivo', 'sociedad', 'madrid', 'barcelona', 'roma', 'lille', 
+                                'milan', 'inter', 'juventus', 'ajax', 'bayern', 'dortmund', 'arsenal',
+                                'chelsea', 'liverpool', 'manchester', 'tottenham', 'everton']
+                if any(word in alt.lower() for word in team_keywords):
                     team_names.append(alt)
+
 
     equipo_local = team_names[0] if len(team_names) >= 1 else ""
     equipo_visitante = team_names[1] if len(team_names) >= 2 else ""
+    
+    # Limpiar nombres de equipos de texto extra (competiciones, fechas, etc.)
+    def clean_team_name(name):
+        if not name:
+            return ""
+        # Eliminar nombres de competiciones y palabras extra
+        unwanted_patterns = [
+            'UEFA Champions League',
+            'UEFA Europa League',
+            'UEFA Conference League',
+            'Primera División',
+            'Segunda División',
+            'Premier League',
+            'Bundesliga',
+            'Serie A',
+            'Ligue 1',
+            'La Liga'
+        ]
+        for pattern in unwanted_patterns:
+            name = name.replace(pattern, '')
+        
+        # Eliminar fechas y números de jornada
+        name = re.sub(r'\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'Matchweek\s+\d+', '', name, flags=re.IGNORECASE)
+        name = re.sub(r'Jornada\s+\d+', '', name, flags=re.IGNORECASE)
+        
+        # Limpiar espacios extra
+        name = ' '.join(name.split())
+        return name.strip()
+    
+    equipo_local = clean_team_name(equipo_local)
+    equipo_visitante = clean_team_name(equipo_visitante)
     
     # Extraer fecha
     fecha = ""
