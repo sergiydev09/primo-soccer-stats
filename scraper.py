@@ -25,7 +25,28 @@ from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 
 BASE_URL = 'https://optaplayerstats.statsperform.com/en_GB/soccer'
-SEASON_CACHE_FILE = 'seasons_cache.json'
+
+# Estructura de salida organizada (rutas ancladas al directorio del proyecto)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_OPTA_DIR = os.path.join(BASE_DIR, 'data', 'opta')
+URLS_DIR = os.path.join(DATA_OPTA_DIR, 'urls')
+LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+CACHE_DIR = os.path.join(BASE_DIR, 'cache')
+SEASON_CACHE_FILE = os.path.join(CACHE_DIR, 'seasons_cache.json')
+ERROR_LOG_FILE = os.path.join(LOGS_DIR, 'scraper_errors.log')
+
+
+def ensure_parent_dir(path):
+    """Crea el directorio contenedor de un archivo si no existe"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+
+def opta_csv_path(league_key, season):
+    return os.path.join(DATA_OPTA_DIR, f"BBDD_partidos_{league_key}_{season}.csv")
+
+
+def opta_urls_path(league_key, season):
+    return os.path.join(URLS_DIR, f"match_urls_{league_key}_{season}.txt")
 
 # Configuración de ligas.
 # 'seasons' mapea temporada -> ID de torneo de Opta, que cambia cada temporada.
@@ -129,6 +150,7 @@ def _load_season_cache():
 
 def _save_season_cache(cache):
     try:
+        ensure_parent_dir(SEASON_CACHE_FILE)
         with open(SEASON_CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(cache, f, indent=2, ensure_ascii=False, sort_keys=True)
     except OSError as e:
@@ -214,8 +236,8 @@ def build_league_config(league_key, season):
         'name': base['name'],
         'season': season,
         'url': build_url(base['slug'], season, resolve_tournament_id(league_key, season)),
-        'csv_file': f"BBDD_partidos_{league_key}_{season}.csv",
-        'urls_file': f"match_urls_{league_key}_{season}.txt"
+        'csv_file': opta_csv_path(league_key, season),
+        'urls_file': opta_urls_path(league_key, season)
     }
 
 def setup_driver():
@@ -281,6 +303,7 @@ def extract_urls(league_config):
     driver.quit()
 
     # Guardar URLs
+    ensure_parent_dir(league_config['urls_file'])
     with open(league_config['urls_file'], 'w') as f:
         for url in match_urls:
             f.write(url + '\n')
@@ -585,7 +608,8 @@ def process_batch(batch_data, progress_counter=None, progress_lock=None):
                 error_msg = f"{type(e).__name__}: {str(e)}"
                 failed_matches.append((i, url, error_msg))
                 # Registrar en archivo
-                with open('scraper_errors.log', 'a') as f:
+                ensure_parent_dir(ERROR_LOG_FILE)
+                with open(ERROR_LOG_FILE, 'a') as f:
                     f.write(f"Partido {i}: {url}\n")
                     f.write(f"Error: {error_msg}\n\n")
                 if progress_counter is not None and progress_lock is not None:
@@ -689,7 +713,7 @@ def extract_all_data(league_config, limit=None, workers=None):
     
     # Mostrar resumen de errores si los hay
     if all_failed:
-        print(f"\n⚠️ {len(all_failed)} partidos fallidos. Ver scraper_errors.log para detalles.")
+        print(f"\n⚠️ {len(all_failed)} partidos fallidos. Ver logs/scraper_errors.log para detalles.")
 
     # Guardar datos finales
     print("\n" + "="*80)
@@ -795,6 +819,7 @@ def save_csv(data, filename):
     fieldnames = [f for f in priority_fields if f in all_keys]
     fieldnames.extend(sorted([k for k in all_keys if k not in priority_fields]))
 
+    ensure_parent_dir(filename)
     with open(filename, 'w', newline='', encoding='utf-8-sig') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()

@@ -6,3 +6,6 @@ tqdm>=4.12.0
 
 # Dependencias para extract_match_urls.py (versión con Selenium)
 selenium>=4.15.0
+
+# Dependencias para bet365_scraper.py
+playwright>=1.40

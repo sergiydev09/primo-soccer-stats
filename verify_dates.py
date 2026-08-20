@@ -8,7 +8,7 @@ import csv
 import sys
 from datetime import datetime
 
-from scraper import ALL_LEAGUES, LEAGUES, current_season, normalize_season
+from scraper import ALL_LEAGUES, LEAGUES, current_season, normalize_season, opta_csv_path
 
 parser = argparse.ArgumentParser(description='Verifica las fechas de una BBDD de partidos')
 parser.add_argument('--league', type=str, default='spain', choices=ALL_LEAGUES,
@@ -18,7 +18,7 @@ parser.add_argument('--season', type=normalize_season, default=None,
 args = parser.parse_args()
 
 season = args.season or current_season()
-filename = f"BBDD_partidos_{args.league}_{season}.csv"
+filename = opta_csv_path(args.league, season)
 
 # Leer CSV
 fechas = set()
