@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Extractor de Datos de Partidos - Primera División 2025-2026
-Uso: python3 scraper.py [urls|data|all]
+Extractor de Datos de Partidos - Ligas y competiciones europeas
+Uso: python3 scraper.py [urls|data|all|seasons] [--league <liga>] [--season <YYYY-YYYY>]
 """
 
 import sys
+import os
+import json
 import time
 import csv
 import re
@@ -12,6 +14,8 @@ import math
 import argparse
 import multiprocessing
 import concurrent.futures
+from datetime import date
+from urllib.parse import quote
 from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -20,57 +24,199 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 
-# Configuración de ligas
+BASE_URL = 'https://optaplayerstats.statsperform.com/en_GB/soccer'
+SEASON_CACHE_FILE = 'seasons_cache.json'
+
+# Configuración de ligas.
+# 'seasons' mapea temporada -> ID de torneo de Opta, que cambia cada temporada.
+# Las temporadas no listadas aquí se descubren automáticamente desde el selector
+# de temporadas de la propia web y se cachean en seasons_cache.json.
 LEAGUES = {
     'spain': {
         'name': 'Primera División',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/primera-divisi%C3%B3n-2025-2026/80zg2v1cuqcfhphn56u4qpyqc/opta-player-stats',
-        'csv_file': 'BBDD_partidos_spain.csv',
-        'urls_file': 'match_urls_spain.txt'
+        'slug': 'primera-división',
+        'seasons': {
+            '2025-2026': '80zg2v1cuqcfhphn56u4qpyqc',
+            '2026-2027': '830epggffy1nfkfyrtpqdwhlg',
+        }
     },
     'england': {
         'name': 'Premier League',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/premier-league-2025-2026/51r6ph2woavlbbpk8f29nynf8/opta-player-stats',
-        'csv_file': 'BBDD_partidos_england.csv',
-        'urls_file': 'match_urls_england.txt'
+        'slug': 'premier-league',
+        'seasons': {
+            '2025-2026': '51r6ph2woavlbbpk8f29nynf8',
+            '2026-2027': '6pdwluctev9iebv00r4qqukno',
+        }
     },
     'germany': {
         'name': 'Bundesliga',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/bundesliga-2025-2026/2bchmrj23l9u42d68ntcekob8/opta-player-stats',
-        'csv_file': 'BBDD_partidos_germany.csv',
-        'urls_file': 'match_urls_germany.txt'
+        'slug': 'bundesliga',
+        'seasons': {
+            '2025-2026': '2bchmrj23l9u42d68ntcekob8',
+            '2026-2027': '8h5xijv2u4mlf5028gso6kw7o',
+        }
     },
     'italy': {
         'name': 'Serie A',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/serie-a-2025-2026/emdmtfr1v8rey2qru3xzfwges/opta-player-stats',
-        'csv_file': 'BBDD_partidos_italy.csv',
-        'urls_file': 'match_urls_italy.txt'
+        'slug': 'serie-a',
+        'seasons': {
+            '2025-2026': 'emdmtfr1v8rey2qru3xzfwges',
+            '2026-2027': '60cryos85i4bp5ul34tt0brx0',
+        }
     },
     'france': {
         'name': 'Ligue 1',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/ligue-1-2025-2026/dbxs75cag7zyip5re0ppsanmc/opta-player-stats',
-        'csv_file': 'BBDD_partidos_france.csv',
-        'urls_file': 'match_urls_france.txt'
+        'slug': 'ligue-1',
+        'seasons': {
+            '2025-2026': 'dbxs75cag7zyip5re0ppsanmc',
+            '2026-2027': 'bqnc4ccgnrp6pb3bktqet0yz8',
+        }
     },
     'ucl': {
         'name': 'UEFA Champions League',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/uefa-champions-league-2025-2026/2mr0u0l78k2gdsm79q56tb2fo/opta-player-stats',
-        'csv_file': 'BBDD_partidos_ucl.csv',
-        'urls_file': 'match_urls_ucl.txt'
+        'slug': 'uefa-champions-league',
+        'seasons': {
+            '2025-2026': '2mr0u0l78k2gdsm79q56tb2fo',
+            '2026-2027': '99jev9kv55deht65t6myggxlg',
+        }
     },
     'uel': {
         'name': 'UEFA Europa League',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/uefa-europa-league-2025-2026/7ttpe5jzya3vjhjadiemjy7mc/opta-player-stats',
-        'csv_file': 'BBDD_partidos_uel.csv',
-        'urls_file': 'match_urls_uel.txt'
+        'slug': 'uefa-europa-league',
+        'seasons': {
+            '2025-2026': '7ttpe5jzya3vjhjadiemjy7mc',
+            '2026-2027': '1rpi0q64a7kut2wiuvecmgbv8',
+        }
     },
     'spain2': {
         'name': 'Segunda División',
-        'url': 'https://optaplayerstats.statsperform.com/en_GB/soccer/segunda-divisi%C3%B3n-2025-2026/dko0hzifl1xv9c51s3ai017v8/opta-player-stats',
-        'csv_file': 'BBDD_partidos_spain2.csv',
-        'urls_file': 'match_urls_spain2.txt'
+        'slug': 'segunda-división',
+        'seasons': {
+            '2025-2026': 'dko0hzifl1xv9c51s3ai017v8',
+            '2026-2027': 'fgkxmpz2ewao1l63jrbkgg7o',
+        }
     }
 }
+
+ALL_LEAGUES = ['spain', 'england', 'germany', 'italy', 'france', 'ucl', 'uel', 'spain2']
+
+def current_season(today=None):
+    """Temporada en curso. El corte es julio: en agosto de 2026 la temporada es 2026-2027"""
+    today = today or date.today()
+    start_year = today.year if today.month >= 7 else today.year - 1
+    return f"{start_year}-{start_year + 1}"
+
+def normalize_season(season):
+    """Acepta '2026-2027', '2026/2027' o '2026' y devuelve '2026-2027'"""
+    season = str(season).strip().replace('/', '-')
+    if re.fullmatch(r'\d{4}', season):
+        year = int(season)
+        return f"{year}-{year + 1}"
+    if not re.fullmatch(r'\d{4}-\d{4}', season):
+        raise argparse.ArgumentTypeError(
+            f"Temporada no válida: '{season}'. Formato esperado: 2026-2027")
+    return season
+
+def _load_season_cache():
+    """Lee las temporadas descubiertas en ejecuciones anteriores"""
+    if not os.path.exists(SEASON_CACHE_FILE):
+        return {}
+    try:
+        with open(SEASON_CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def _save_season_cache(cache):
+    try:
+        with open(SEASON_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False, sort_keys=True)
+    except OSError as e:
+        print(f"⚠️ No se pudo guardar {SEASON_CACHE_FILE}: {e}")
+
+def build_url(slug, season, tournament_id):
+    """Construye la URL de Opta para una competición y temporada"""
+    return f"{BASE_URL}/{quote(f'{slug}-{season}', safe='')}/{tournament_id}/opta-player-stats"
+
+def discover_seasons(league_key):
+    """Descubre las temporadas disponibles leyendo el selector de temporada de la web.
+
+    Devuelve {'2026-2027': 'id_de_torneo', ...}
+    """
+    base = LEAGUES[league_key]
+    reference = max(base['seasons'])
+    reference_url = build_url(base['slug'], reference, base['seasons'][reference])
+
+    driver = setup_driver()
+    found = {}
+    try:
+        driver.get(reference_url)
+        try:
+            WebDriverWait(driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'select[name="season"]'))
+            )
+        except Exception:
+            time.sleep(5)
+
+        for select in driver.find_elements(By.CSS_SELECTOR, 'select[name="season"]'):
+            for option in select.find_elements(By.TAG_NAME, 'option'):
+                value = option.get_attribute('value') or ''
+                match = re.search(r'/soccer/[^/]+?-(\d{4}-\d{4})/([a-z0-9]+)/', value)
+                if match:
+                    found[match.group(1)] = match.group(2)
+    except Exception as e:
+        print(f"⚠️ No se pudieron leer las temporadas de {base['name']}: {e}")
+    finally:
+        driver.quit()
+
+    return found
+
+def available_seasons(league_key, discover=True):
+    """Temporadas conocidas (configuradas + cacheadas + descubiertas)"""
+    seasons = dict(LEAGUES[league_key]['seasons'])
+    seasons.update(_load_season_cache().get(league_key, {}))
+    if discover:
+        found = discover_seasons(league_key)
+        if found:
+            cache = _load_season_cache()
+            cache.setdefault(league_key, {}).update(found)
+            _save_season_cache(cache)
+            seasons.update(found)
+    return seasons
+
+def resolve_tournament_id(league_key, season):
+    """Obtiene el ID de torneo de una temporada, descubriéndolo si hace falta"""
+    base = LEAGUES[league_key]
+
+    if season in base['seasons']:
+        return base['seasons'][season]
+
+    cached = _load_season_cache().get(league_key, {}).get(season)
+    if cached:
+        return cached
+
+    print(f"🔎 Buscando la temporada {season} de {base['name']} en la web...")
+    seasons = available_seasons(league_key)
+    if season in seasons:
+        print(f"   ✓ Encontrada: {seasons[season]}")
+        return seasons[season]
+
+    disponibles = ', '.join(sorted(seasons)) or 'ninguna'
+    raise SystemExit(
+        f"❌ La temporada {season} no está disponible para {base['name']}.\n"
+        f"   Temporadas disponibles: {disponibles}")
+
+def build_league_config(league_key, season):
+    """Config completa (URL y archivos) de una competición para una temporada"""
+    base = LEAGUES[league_key]
+    return {
+        'key': league_key,
+        'name': base['name'],
+        'season': season,
+        'url': build_url(base['slug'], season, resolve_tournament_id(league_key, season)),
+        'csv_file': f"BBDD_partidos_{league_key}_{season}.csv",
+        'urls_file': f"match_urls_{league_key}_{season}.txt"
+    }
 
 def setup_driver():
     """Configura el driver de Chrome"""
@@ -87,7 +233,7 @@ def setup_driver():
 def extract_urls(league_config):
     """Extrae URLs de todos los partidos"""
     print("="*80)
-    print(f"EXTRAYENDO URLs DE PARTIDOS - {league_config['name']}")
+    print(f"EXTRAYENDO URLs DE PARTIDOS - {league_config['name']} {league_config['season']}")
     print("="*80)
 
     url = league_config['url']
@@ -139,7 +285,11 @@ def extract_urls(league_config):
         for url in match_urls:
             f.write(url + '\n')
 
-    print(f"\n✓ {len(match_urls)} URLs guardadas en: {league_config['urls_file']}\n")
+    if not match_urls:
+        print(f"\n⚠️ No se encontró ningún partido de {league_config['name']} {league_config['season']}.")
+        print("   Es normal si la temporada todavía no ha empezado.\n")
+    else:
+        print(f"\n✓ {len(match_urls)} URLs guardadas en: {league_config['urls_file']}\n")
     return match_urls
 
 def extract_match_data(driver, url, match_number):
@@ -450,7 +600,7 @@ def process_batch(batch_data, progress_counter=None, progress_lock=None):
 def extract_all_data(league_config, limit=None, workers=None):
     """Extrae datos de todos los partidos en paralelo"""
     print("="*80)
-    print(f"EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO) - {league_config['name']}")
+    print(f"EXTRAYENDO DATOS DE TODOS LOS PARTIDOS (PARALELO) - {league_config['name']} {league_config['season']}")
     print("="*80)
 
     # Leer URLs
@@ -466,6 +616,9 @@ def extract_all_data(league_config, limit=None, workers=None):
         urls = urls[:limit]
 
     total_urls = len(urls)
+    if total_urls == 0:
+        print(f"\n⚠️ No hay partidos que procesar para {league_config['name']} {league_config['season']}.\n")
+        return
     print(f"\nTotal de partidos: {total_urls}\n")
 
     # Configuración de paralelismo
@@ -515,7 +668,7 @@ def extract_all_data(league_config, limit=None, workers=None):
                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
             
             # Actualizar barra mientras los trabajos se completan
-            while progress_counter.value < total_urls:
+            while progress_counter.value < total_urls and not all(f.done() for f in future_to_batch):
                 current = progress_counter.value
                 pbar.n = current
                 pbar.refresh()
@@ -647,33 +800,55 @@ def save_csv(data, filename):
         writer.writeheader()
         writer.writerows(data)
 
+def show_seasons(league_keys):
+    """Lista las temporadas disponibles de cada competición"""
+    print("\n" + "="*80)
+    print("TEMPORADAS DISPONIBLES")
+    print("="*80)
+    for league_key in league_keys:
+        seasons = available_seasons(league_key)
+        etiquetas = ', '.join(sorted(seasons, reverse=True)) or 'ninguna'
+        print(f"\n{LEAGUES[league_key]['name']} ({league_key})")
+        print(f"  {etiquetas}")
+    print()
+
 def main():
     parser = argparse.ArgumentParser(description='Scraper de datos de partidos')
-    parser.add_argument('command', choices=['urls', 'data', 'all'], help='Comando a ejecutar')
+    parser.add_argument('command', choices=['urls', 'data', 'all', 'seasons'],
+                       help='Comando a ejecutar (seasons lista las temporadas disponibles)')
     parser.add_argument('--league', type=str, default='spain', 
-                       choices=['spain', 'england', 'germany', 'italy', 'france', 'ucl', 'uel', 'spain2', 'both', 'all'],
+                       choices=ALL_LEAGUES + ['both', 'all'],
                        help='Liga/Competición: spain, england, germany, italy, france, ucl, uel, spain2, both (spain+england), o all (todas)')
+    parser.add_argument('--season', type=normalize_season, default=None,
+                       help=f'Temporada, p.ej. 2026-2027 (por defecto la temporada en curso: {current_season()})')
     parser.add_argument('--limit', type=int, help='Limitar número de partidos (para pruebas)')
     parser.add_argument('--workers', type=int, help='Número de workers en paralelo')
     
     args = parser.parse_args()
 
     start_time = time.time()
+    season = args.season or current_season()
     
     # Determinar qué ligas procesar
     if args.league == 'both':
         leagues_to_process = ['spain', 'england']
     elif args.league == 'all':
-        leagues_to_process = ['spain', 'england', 'germany', 'italy', 'france', 'ucl', 'uel', 'spain2']
+        leagues_to_process = list(ALL_LEAGUES)
     else:
         leagues_to_process = [args.league]
+
+    if args.command == 'seasons':
+        show_seasons(leagues_to_process)
+        return
+
+    print(f"\n🗓️  Temporada: {season}")
     
     # Procesar cada liga
     for league_key in leagues_to_process:
-        league_config = LEAGUES[league_key]
+        league_config = build_league_config(league_key, season)
         
         print("\n" + "#"*80)
-        print(f"# PROCESANDO: {league_config['name'].upper()}")
+        print(f"# PROCESANDO: {league_config['name'].upper()} {season}")
         print("#"*80 + "\n")
         
         if args.command == 'urls':
