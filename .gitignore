@@ -1,9 +1,12 @@
-# Archivos generados / Datos
+# Archivos generados / Datos (solo se versionan los organizados bajo data/ y cache/)
 *.csv
 *.html
 match_urls.txt
 match_urls_*.txt
 seasons_cache.json
+!data/**/*.csv
+!data/**/*.txt
+!cache/seasons_cache.json
 
 # Python
 __pycache__/
