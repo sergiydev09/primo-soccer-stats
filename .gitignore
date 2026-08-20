@@ -3,6 +3,7 @@
 *.html
 match_urls.txt
 match_urls_*.txt
+seasons_cache.json
 
 # Python
 __pycache__/
