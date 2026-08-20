@@ -12,7 +12,9 @@ Jerarquía del feed de un partido:
   MG (grupo de mercado, ej. "Goles - Más/Menos de")
     MA (columna, ej. "Más de" / "Menos de"; la primera MA sin nombre lleva las
         etiquetas de fila: jugadores o líneas)
-      PA (celda: selección con cuota OD= fraccional, o etiqueta de fila sin OD)
+      CO (sub-columna de cantidad en mercados de jugadores: "1+", "2+", "3+"...;
+          cada CO reinicia el recorrido de filas)
+        PA (celda: selección con cuota OD= fraccional, o etiqueta de fila sin OD)
 
 Particularidades del servidor que condicionan el diseño:
   - Responde a veces en inglés cuando la petición no nace de una interacción real
@@ -24,7 +26,7 @@ Uso:
   python3 bet365_scraper.py cuotas --league spain                  # La Liga, todo lo listado
   python3 bet365_scraper.py cuotas --league spain --jornada 1      # solo la próxima jornada
   python3 bet365_scraper.py cuotas --league spain --tabs "Resultado,Goles,Córners"
-  python3 bet365_scraper.py cuotas --league spain --full           # expande también los grupos colapsados
+  python3 bet365_scraper.py cuotas --league spain --rapido         # sin expandir colapsados ni 'Ver más'
   python3 bet365_scraper.py cuotas --comp-id 135650998 --league-name "La Liga"
   python3 bet365_scraper.py ligas                                  # ver ligas configuradas
 """
@@ -89,6 +91,10 @@ TAB_ES = {
     'Specials': 'Especiales', 'Bet Builder': 'Crear apuesta',
     'Quick Players': 'Rápidas a Jugadores', 'Player Quick Bets': 'Rápidas a Jugadores',
 }
+
+# Pestañas cuyo clic abre la vista nueva con filtros (sin datos capturables por
+# HTTP); se navega directamente por hash a la vista clásica equivalente
+HASH_FIRST_TABS = {'anotadores', 'scorers'}
 
 # El servidor puede responder en inglés o español; se detecta por votación de
 # palabras en los nombres de los grupos de mercados.
@@ -256,6 +262,7 @@ def coupon_rows(records, tab_name):
     empty_mgs = []
     mg_name, mg_id, mg_pa_count = None, None, 0
     ma_name = None
+    co_name = None
     labels, label_recs = [], []
     odd_idx = 0
 
@@ -272,6 +279,7 @@ def coupon_rows(records, tab_name):
             mg_id = rec.get('ID') or None
             mg_pa_count = 0
             ma_name = None
+            co_name = None
             labels, label_recs = [], []
             odd_idx = 0
         elif t == 'MA':
@@ -280,6 +288,11 @@ def coupon_rows(records, tab_name):
                 ma_name = None
                 continue
             ma_name = (rec.get('NA') or '').strip()
+            co_name = None
+            odd_idx = 0
+        elif t == 'CO' and mg_name:
+            # sub-columna de cantidad ("1+", "2+"...): recorre las filas desde arriba
+            co_name = (rec.get('NA') or '').strip()
             odd_idx = 0
         elif t == 'PA' and mg_name:
             od = rec.get('OD', '')
@@ -300,7 +313,7 @@ def coupon_rows(records, tab_name):
                 rows_by_mg.setdefault(key, []).append({
                     'mercado_id': mg_id or '',
                     'mercado': mg_name,
-                    'columna': ma_name or '',
+                    'columna': co_name or ma_name or '',
                     'seleccion': sel,
                     'linea': linea,
                     'cuota_frac': od,
@@ -499,7 +512,8 @@ class Bet365Session:
         una respuesta en inglés solo se corrige con una petición nueva.
         """
         other = next((t for t in tabs if t['i'] != tab['i'] and
-                      norm_txt(t['name']) not in EXCLUDED_TABS), None)
+                      norm_txt(t['name']) not in EXCLUDED_TABS and
+                      norm_txt(t['name']) not in HASH_FIRST_TABS), None)
         if other:
             try:
                 self.click_tab(fi, other, timeout=6000)
@@ -667,12 +681,16 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
         session.pause()
         note(tab_es(tab['name']))
         try:
-            tcap = session.click_tab(fi, tab)
-            if tcap is None:
-                tcap = session.bounce_tab(fi, tab, tabs)
-            if tcap is None:
+            if norm_txt(tab['name']) in HASH_FIRST_TABS:
                 tcap = session.hash_nav(f"#/AC/B1/C1/D8/E{fi}/F3/I{tab['i']}/",
                                         pred_coupon(fi, f"#I{tab['i']}#"))
+            else:
+                tcap = session.click_tab(fi, tab)
+                if tcap is None:
+                    tcap = session.bounce_tab(fi, tab, tabs)
+                if tcap is None:
+                    tcap = session.hash_nav(f"#/AC/B1/C1/D8/E{fi}/F3/I{tab['i']}/",
+                                            pred_coupon(fi, f"#I{tab['i']}#"))
             if tcap is not None and not tcap.body:
                 # feed vacío a mitad de partido: reiniciar el estado y repetir
                 note('recargando')
@@ -724,8 +742,12 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
         except Exception as e:
             log_error(f"{fx['fd']}: reintento índice: {e}")
 
-    # Grupos colapsados (solo --full): volver a cada pestaña y expandirlos
+    # Grupos colapsados: volver a cada pestaña y expandirlos. El servidor devuelve
+    # vacío para grupos sin datos (props capados cerca del inicio del partido):
+    # eso no se reintenta; solo si se encadenan muchos vacíos (sesión degradada)
+    # se recarga la página una vez.
     if full:
+        empty_streak = 0
         for tab, empties in pending:
             try:
                 session.click_tab(fi, tab, timeout=6000)
@@ -736,8 +758,19 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
                 try:
                     session.pause(0.4, 0.9)
                     ecap = session.expand_capture(mg_name, pred_expand(fi))
-                    if ecap:
+                    if ecap is not None and not ecap.body and empty_streak >= 4:
+                        note('recargando')
+                        session.recover_match(fi)
+                        session.click_tab(fi, tab, timeout=6000)
+                        session.pause(0.4, 0.9)
+                        empty_streak = 0
+                        ecap = session.expand_capture(mg_name, pred_expand(fi))
+                    if ecap and ecap.body:
+                        empty_streak = 0
                         merge(tab['name'], ecap.body)
+                    else:
+                        empty_streak += 1
+                        log_error(f"{fx['fd']}: expandir '{mg_name}': sin datos")
                 except Exception as e:
                     log_error(f"{fx['fd']}: expandir '{mg_name}': {e}")
             if not rapido:
@@ -807,7 +840,7 @@ def scrape_league(args):
                 session.pause(1.2, 2.4)
                 try:
                     rows = scrape_match(session, fx, fixtures, idx,
-                                        args.tabs, args.full, args.rapido,
+                                        args.tabs, not args.rapido, args.rapido,
                                         market_dict, bar)
                 except PWTimeout:
                     log_error(f"{fx['fd']}: timeout abriendo el partido")
@@ -888,10 +921,9 @@ def main():
     p.add_argument('--partidos', type=int, help='Límite de partidos (para pruebas)')
     p.add_argument('--tabs', type=lambda s: [x.strip() for x in s.split(',') if x.strip()],
                    help='Pestañas a extraer, ej: "Resultado,Goles,Córners" (por defecto todas)')
-    p.add_argument('--full', action='store_true',
-                   help='Expandir también los grupos de mercados colapsados (más lento)')
     p.add_argument('--rapido', action='store_true',
-                   help="No pulsar los botones 'Ver más' (menos filas, más rápido)")
+                   help="No expandir grupos colapsados ni pulsar 'Ver más' (más rápido, "
+                        "pero pierde mercados como Método del gol o los hándicaps)")
     p.add_argument('--attach', nargs='?', const='http://127.0.0.1:9222', default=None,
                    help='Usar tu Chrome habitual vía CDP (lánzalo antes con '
                         '--remote-debugging-port=9222). Sesión 100%% real, feed en español')

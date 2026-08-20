@@ -183,8 +183,9 @@ python3 bet365_scraper.py cuotas --league spain --jornada 1
 # Solo algunas pestañas de mercados
 python3 bet365_scraper.py cuotas --league spain --tabs "Resultado,Goles,Córners"
 
-# Modo completo: expande también los grupos de mercados colapsados (más lento)
-python3 bet365_scraper.py cuotas --league spain --full
+# Modo rápido: sin expandir grupos colapsados ni 'Ver más' (pierde mercados
+# como Método del gol, Multicórner o los hándicaps de córners)
+python3 bet365_scraper.py cuotas --league spain --rapido
 
 # Pruebas rápidas
 python3 bet365_scraper.py cuotas --league spain --partidos 2 --rapido
@@ -232,8 +233,11 @@ siguiente). Para el número absoluto, cruza fecha+equipos con tu BBDD de Opta.
 
 - bet365 lista normalmente la jornada próxima completa y algunos adelantos.
   Ejecuta el scraper cada semana (p. ej. martes/miércoles) para cada jornada.
+- Por defecto se captura todo: pestañas, grupos colapsados (Método del gol,
+  hándicaps de córners...) y listas 'Ver más'. En mercados de jugadores con
+  cantidades (remates 1+/2+/3+...), la cantidad va en la columna `columna`.
 - Ritmo: el scraper mete pausas aleatorias entre clics; una jornada completa
-  tarda ~15-30 min (más con `--full`). No lo aceleres: es una web con
+  tarda ~30-45 min (`--rapido` la baja a ~15). No lo aceleres: es una web con
   protección anti-bot y conviene parecer humano.
 - Si bet365 mostrara un captcha/challenge en la ventana, resuélvelo a mano una
   vez; el perfil persistente lo recuerda.
