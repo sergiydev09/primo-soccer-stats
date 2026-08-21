@@ -78,9 +78,13 @@ LEAGUES = {
     # 'england': {'name': 'Premier League', 'comp_id': None},
 }
 
-# Pestañas que no aportan cuotas tabulares (ninguna por ahora; 'Crear apuesta' sí
-# trae las cuotas individuales de cada selección del builder)
-EXCLUDED_TABS = set()
+# La pestaña 'Crear apuesta' se captura con el feed del wizard del Bet Builder
+# (betbuilderpregamecontentapi), que trae todos sus desplegables de una vez.
+WIZARD_TABS = {'crear apuesta', 'bet builder'}
+
+# 'Rápidas a Jugadores' es otra vista del builder sin feed HTTP propio; su
+# contenido ya viene en el wizard.
+EXCLUDED_TABS = {'rapidas a jugadores', 'quick players', 'player quick bets'}
 
 # Equivalencias inglés -> español de los nombres de pestañas (para el CSV y --tabs)
 TAB_ES = {
@@ -329,6 +333,76 @@ def coupon_rows(records, tab_name):
     return rows_by_mg, empty_mgs
 
 
+def wizard_rows(body, tab_name):
+    """Convierte el feed del wizard del Bet Builder en filas de cuotas.
+
+    Estructura: EV (desplegable, ej. "Jugador - Anotará") -> MG (con TL= lista de
+    chips separada por '¬' y TE= equipos "td^nombre¬td^nombre") -> bloques de MA
+    (una MA de etiquetas en blanco abre cada chip; las siguientes son columnas)
+    -> PA (con OD= cuota; S1= jugador, HA= línea, TD= id de equipo).
+    """
+    rows_by_ev = {}
+    ev_name, ev_id = None, None
+    chips, teams = [], {}
+    chip_idx = -1
+    col_name = None
+    labels = []
+    odd_idx = 0
+
+    for rec in zap_records(body):
+        t = rec['_t']
+        if t == 'EV':
+            ev_name = (rec.get('NA') or '').strip() or None
+            ev_id = rec.get('ID') or ''
+            chips, teams = [], {}
+            chip_idx, col_name, labels, odd_idx = -1, None, [], 0
+        elif t == 'MG' and ev_name:
+            tl = rec.get('TL') or ''
+            chips = [c.strip() for c in tl.split('¬') if c.strip()] if tl else []
+            teams = {}
+            for part in (rec.get('TE') or '').split('¬'):
+                if '^' in part:
+                    tid, tname = part.split('^', 1)
+                    teams[tid] = tname
+        elif t == 'MA' and ev_name:
+            name = (rec.get('NA') or '').strip()
+            if not name:
+                chip_idx += 1
+                col_name = None
+                labels = []
+            else:
+                col_name = name
+            odd_idx = 0
+        elif t == 'PA' and ev_name:
+            od = rec.get('OD', '')
+            if not od:
+                lbl = (rec.get('NA') or rec.get('HA') or '').strip()
+                labels.append(lbl)
+                continue
+            label = labels[odd_idx] if odd_idx < len(labels) else ''
+            odd_idx += 1
+            sel = (rec.get('S1') or '').strip() or (rec.get('B1') or '').strip() \
+                or (rec.get('S2') or '').strip() or label
+            linea = (rec.get('HA') or rec.get('HD') or '').strip()
+            if not linea and re.fullmatch(r'[+\-]?\d+(?:[.,]\d+)?', label or ''):
+                linea = label
+            filtro = chips[chip_idx] if 0 <= chip_idx < len(chips) else ''
+            key = f'BB{ev_id}'
+            rows_by_ev.setdefault(key, []).append({
+                'mercado_id': key,
+                'mercado': ev_name,
+                'filtro': filtro,
+                'columna': col_name or (rec.get('B5') or '').strip(),
+                'seleccion': sel,
+                'linea': linea,
+                'equipo': teams.get(rec.get('TD') or '', ''),
+                'cuota_frac': od,
+                'cuota': frac_to_dec(od),
+                'pestana': tab_name,
+            })
+    return rows_by_ev
+
+
 def mg_names_of(records):
     return [(r.get('NA') or '').strip() for r in records if r['_t'] == 'MG']
 
@@ -367,6 +441,13 @@ def pred_coupon(fi, suffix=None):
         m = re.search(r'[?&]pd=([^&]*)', url)
         pd = m.group(1) if m else ''
         return pd.endswith(suffix)
+    return pred
+
+
+def pred_wizard(fi):
+    def pred(resp):
+        return ('/betbuilderpregamecontentapi/wizard' in resp.url
+                and f'f={fi}' in resp.url)
     return pred
 
 
@@ -426,7 +507,8 @@ class Bet365Session:
         self.page.on('response', self._on_response)
 
     def _on_response(self, response):
-        if 'matchbettingcontentapi' in response.url:
+        if ('matchbettingcontentapi' in response.url
+                or 'betbuilderpregamecontentapi' in response.url):
             self._coupon_responses.append(response)
 
     def close(self):
@@ -604,7 +686,7 @@ def open_match(session, fx, fixtures, idx):
 # ---------------------------------------------------------------------------
 
 def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
-                 market_dict=None, bar=None):
+                 market_dict=None, bar=None, emit_index=True):
     """Scrapea todas las pestañas de mercados de un partido. Devuelve filas CSV."""
     fi = fx['fi']
     all_rows = {}   # (pestana, clave_mg) -> [rows]
@@ -613,6 +695,25 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
     def note(msg):
         if bar:
             bar.set_postfix_str(f"{fx['local'][:16]} · {msg}"[:46])
+
+    def merge_wizard(tab_name, body):
+        rows_by_ev = wizard_rows(body, tab_es(tab_name))
+        names = [rows[0]['mercado'] for rows in rows_by_ev.values() if rows]
+        is_es = sum(1 for n in names if any(h in n for h in SPANISH_HINTS)) >= \
+            sum(1 for n in names if any(h in n for h in ENGLISH_HINTS))
+        for key, rows in rows_by_ev.items():
+            for row in rows:
+                row['idioma'] = 'es' if is_es else 'en'
+                if is_es:
+                    if not any(h in row['mercado'] for h in ENGLISH_HINTS):
+                        market_dict[key] = row['mercado']
+                else:
+                    known = market_dict.get(key)
+                    if known:
+                        row['mercado'] = known
+                        row['idioma'] = 'es'
+            all_rows[(tab_es(tab_name), key)] = rows
+        return rows_by_ev
 
     def merge(tab_name, body):
         records = zap_records(body)
@@ -656,8 +757,10 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
     # "Populares"); identificarla por la URL de la respuesta.
     index_tab = tab_from_url(cap.url, tabs)
     index_english = looks_english(records)
+    if not emit_index:
+        index_english = False
     empty0 = []
-    if not index_english:
+    if emit_index and not index_english:
         _, empty0 = merge(index_tab['name'], cap.body)
 
     wanted = []
@@ -672,6 +775,7 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
             if not any(t in name_es or name_es in t for t in targets):
                 continue
         wanted.append(tab)
+    wanted.sort(key=lambda t: 0 if norm_txt(t['name']) in WIZARD_TABS else 1)
 
     pending = []
     if full and empty0:
@@ -681,6 +785,31 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
         session.pause()
         note(tab_es(tab['name']))
         try:
+            if norm_txt(tab['name']) in WIZARD_TABS:
+                wcap = None
+                alias = 'Bet Builder' if norm_txt(tab['name']) == 'crear apuesta' else 'Crear apuesta'
+                for text in (tab['name'], alias):
+                    try:
+                        wcap = session.click_capture(text, pred_wizard(fi),
+                                                     y_min=60, y_max=340, timeout=9000)
+                    except PWTimeout:
+                        wcap = None
+                    if wcap and wcap.body:
+                        break
+                if wcap is None or not wcap.body:
+                    # reintento con la página recién recargada
+                    session.recover_match(fi)
+                    session.pause(0.5, 1.0)
+                    try:
+                        wcap = session.click_capture(tab['name'], pred_wizard(fi),
+                                                     y_min=60, y_max=340, timeout=15000)
+                    except PWTimeout:
+                        wcap = None
+                if wcap and wcap.body:
+                    merge_wizard(tab['name'], wcap.body)
+                else:
+                    log_error(f"{fx['fd']}: wizard del Bet Builder sin datos")
+                continue
             if norm_txt(tab['name']) in HASH_FIRST_TABS:
                 tcap = session.hash_nav(f"#/AC/B1/C1/D8/E{fi}/F3/I{tab['i']}/",
                                         pred_coupon(fi, f"#I{tab['i']}#"))
@@ -785,7 +914,10 @@ def scrape_match(session, fx, fixtures, idx, tabs_filter, full, rapido,
     flat = []
     for (tab_name, _key), rows in all_rows.items():
         for row in rows:
-            k = (row['mercado'], row['columna'], row['seleccion'], row['linea'], row['cuota_frac'])
+            row.setdefault('filtro', '')
+            row.setdefault('equipo', '')
+            k = (row['mercado'], row['filtro'], row['columna'], row['seleccion'],
+                 row['linea'], row['cuota_frac'])
             if k in seen:
                 continue
             seen.add(k)
@@ -824,6 +956,16 @@ def scrape_league(args):
             print("❌ No se han encontrado partidos en el listado.")
             sys.exit(1)
 
+        if args.todas:
+            tabs_filter = None
+        elif args.tabs:
+            tabs_filter = args.tabs
+        else:
+            # por defecto: solo la pestaña Crear apuesta (Bet Builder)
+            tabs_filter = ['Crear apuesta']
+        emit_index = tabs_filter is None or any(
+            norm_txt(tab_es(w)) in ('populares', 'popular') for w in tabs_filter)
+
         if args.jornada:
             fixtures = [f for f in fixtures if f['jornada_rel'] == args.jornada]
         if args.partidos:
@@ -835,13 +977,14 @@ def scrape_league(args):
             print(f"   J{fx['jornada_rel']}  {when}  {fx['local']} v {fx['visitante']}")
 
         all_rows = []
+        failed = []
         with tqdm(total=len(fixtures), desc='Partidos', unit='partido') as bar:
             for idx, fx in enumerate(fixtures):
                 session.pause(1.2, 2.4)
                 try:
                     rows = scrape_match(session, fx, fixtures, idx,
-                                        args.tabs, not args.rapido, args.rapido,
-                                        market_dict, bar)
+                                        tabs_filter, not args.rapido, args.rapido,
+                                        market_dict, bar, emit_index)
                 except PWTimeout:
                     log_error(f"{fx['fd']}: timeout abriendo el partido")
                     rows = []
@@ -889,10 +1032,11 @@ def scrape_league(args):
             DATA_DIR, f"cuotas_bet365_{league_key}_{datetime.now():%Y-%m-%d_%H%M}.csv")
         ensure_parent_dir(out)
         fieldnames = ['scrape_ts', 'casa', 'liga', 'jornada_rel', 'fecha', 'hora',
-                      'local', 'visitante', 'fixture_id', 'pestana', 'mercado_id', 'mercado',
-                      'columna', 'seleccion', 'linea', 'cuota', 'cuota_frac', 'idioma']
+                      'local', 'visitante', 'fixture_id', 'pestana', 'mercado_id',
+                      'mercado', 'filtro', 'columna', 'seleccion', 'linea', 'equipo',
+                      'cuota']
         with open(out, 'w', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             writer.writerows(all_rows)
 
@@ -920,7 +1064,10 @@ def main():
     p.add_argument('--jornada', type=int, help='Solo la jornada relativa N (1 = próxima)')
     p.add_argument('--partidos', type=int, help='Límite de partidos (para pruebas)')
     p.add_argument('--tabs', type=lambda s: [x.strip() for x in s.split(',') if x.strip()],
-                   help='Pestañas a extraer, ej: "Resultado,Goles,Córners" (por defecto todas)')
+                   help='Pestañas a extraer, ej: "Crear apuesta,Resultado,Goles" '
+                        '(por defecto solo Crear apuesta)')
+    p.add_argument('--todas', action='store_true',
+                   help='Extraer todas las pestañas de mercados, no solo Crear apuesta')
     p.add_argument('--rapido', action='store_true',
                    help="No expandir grupos colapsados ni pulsar 'Ver más' (más rápido, "
                         "pero pierde mercados como Método del gol o los hándicaps)")

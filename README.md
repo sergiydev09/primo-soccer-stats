@@ -174,18 +174,22 @@ propietario. Verás abrirse una ventana de Chrome durante el scraping: es normal
 ```bash
 pip3 install playwright   # una vez
 
-# La Liga: todos los partidos listados (jornada próxima + adelantos), todas las pestañas
+# La Liga: todos los partidos listados (jornada próxima + adelantos).
+# Por defecto extrae SOLO la pestaña "Crear apuesta" (Bet Builder), que
+# concentra todos los mercados de jugadores con sus filtros.
 python3 bet365_scraper.py cuotas --league spain
 
 # Solo la próxima jornada
 python3 bet365_scraper.py cuotas --league spain --jornada 1
 
-# Solo algunas pestañas de mercados
-python3 bet365_scraper.py cuotas --league spain --tabs "Resultado,Goles,Córners"
+# Todas las pestañas de mercados (Resultado, Goles, Córners, Asiáticos...)
+python3 bet365_scraper.py cuotas --league spain --todas
 
-# Modo rápido: sin expandir grupos colapsados ni 'Ver más' (pierde mercados
-# como Método del gol, Multicórner o los hándicaps de córners)
-python3 bet365_scraper.py cuotas --league spain --rapido
+# Pestañas concretas
+python3 bet365_scraper.py cuotas --league spain --tabs "Crear apuesta,Córners"
+
+# Con --todas, --rapido salta grupos colapsados y botones 'Ver más'
+python3 bet365_scraper.py cuotas --league spain --todas --rapido
 
 # Pruebas rápidas
 python3 bet365_scraper.py cuotas --league spain --partidos 2 --rapido
@@ -205,13 +209,21 @@ python3 bet365_scraper.py cuotas --comp-id 135650998 --league-name "La Liga"
 | `jornada_rel` | jornada relativa estimada (1 = la más próxima) |
 | `fecha`, `hora` | del partido, en hora peninsular |
 | `local`, `visitante`, `fixture_id` | partido (el id es estable en bet365) |
-| `pestana` | pestaña de la ficha (Resultado, Goles, Córners, Crear apuesta...) |
+| `pestana` | pestaña de la ficha (Crear apuesta, Resultado, Goles, Córners...) |
 | `mercado_id`, `mercado` | grupo de mercado (id estable entre partidos e idiomas) |
-| `columna` | columna dentro del mercado (Más de / Menos de / Anotará...) |
-| `seleccion` | selección o jugador o línea |
+| `filtro` | sub-pestaña/chip dentro del mercado (Método del gol, Mitad, equipo...) |
+| `columna` | columna dentro de la tabla (Más de / 1+ / De cabeza / Amonestado...) |
+| `seleccion` | selección, jugador o línea |
 | `linea` | línea/hándicap si aplica (2.5, -1.0, 9.5...) |
-| `cuota` | decimal; `cuota_frac` fraccional original |
-| `idioma` | es/en del nombre del mercado (ver nota) |
+| `equipo` | equipo del jugador (en mercados del Bet Builder) |
+| `cuota` | cuota decimal |
+
+La pestaña **Crear apuesta** (Bet Builder) se captura desde su propio feed
+(`wizard`), que incluye de una vez todos sus desplegables con sus filtros:
+Jugador - Anotará (Anotadores / Múltiples / Método del gol / Mitad),
+Jugador - Tarjeta, Remates a puerta de cabeza / fuera del área, Entradas,
+Recibirá falta, Paradas del portero, etc. Es la fuente más completa de props
+por jugador y se procesa con prioridad.
 
 ## Nota sobre el idioma
 
